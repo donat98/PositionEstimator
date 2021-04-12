@@ -5,8 +5,11 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from future.backports.datetime import time
 from torch.utils.data import DataLoader
-import InertialDataset as ds
+import InertialDataset as iDataset
+import InertialTransformer as iTransformer
+
 import torch
+from torch import nn
 
 '''
 def get_pos_encoding(positions, d_model = 8):
@@ -35,6 +38,13 @@ def get_arc_pos(time, r, max_angle):
     pos_z = pos_z.reshape(pos_y.shape)
     return pos_x, pos_y, pos_z
 '''
+
+
+def generate_square_subsequent_mask(sz):
+    mask = torch.triu(torch.ones(sz, sz), 1)
+    mask = mask.float().masked_fill(mask == 1, float('-inf')).masked_fill(mask == 0, float(0.0))
+    return mask
+
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
     '''
@@ -83,21 +93,77 @@ if __name__ == '__main__':
     print(time_np_seq)
     print(time_np_seq.shape)
     '''
-    learning_ds = ds.InertialDataset('converted_saves-continous1/converted_save_continous1-4.csv', d_model=14, seq_length=1, train=True, dtype=torch.float64)
-    learning_dl = DataLoader(learning_ds, batch_size=1, shuffle=True)
+    d_model = 8
+    seq_length = 5
+    time_scale = (10**(-5))
+    learning_ds = iDataset.InertialDataset('converted_saves-continous1/converted_save_continous1-1.csv', d_model=d_model, seq_length=seq_length, split=False, dtype=torch.float32, time_scale=time_scale)
+    validation_ds = iDataset.InertialDataset('converted_saves-continous1/converted_save_continous1-2.csv', d_model=d_model, seq_length=seq_length, split=False, dtype=torch.float32, time_scale=time_scale)
 
-    for sample in learning_dl:
-        print(f"Input data shape: {sample['input_data'].shape}")
+    '''
+    for sample in learning_ds:
+        
+        sample['input_data'] = torch.transpose(sample['input_data'], 0, 1)
+        sample['label'] = torch.transpose(sample['label'], 0, 1)
+        sample['positions'] = torch.transpose(sample['positions'], 0, 1)
+
+        print(f"Encoder input shape: {sample['encoder_input'].shape}")
+        print(f"Positional encoding shape: {sample['pos_encoding'].shape}")
+        print(f"Decoder input shape: {sample['decoder_input'].shape}")
         print(f"Label shape: {sample['label'].shape}")
-        print(f"Positions shape: {sample['positions'].shape}")
 
-    d_model = X.shape[1]
-    pos_encoding = get_pos_encoding(time_np_seq, d_model)
+    print(f"{generate_square_subsequent_mask(10).shape}")
+    '''
+
+    '''
+    #Positional encoding example heat map
+    pos_encoding = learning_ds[0]['pos_encoding'].numpy()
     plt.pcolormesh(pos_encoding, cmap='hot')
     plt.xlabel('Depth')
-    plt.xlim((0, d_model))
+    plt.xlim((0, learning_ds.d_model))
     #plt.ylim((0, time_np_sec[-1]))
     plt.ylabel('Position')
     plt.title("PE matrix heat map")
     plt.colorbar()
     plt.show()
+    '''
+    batch_size = 10
+    learning_rate = 10**(-3)
+    epochs = 50
+
+    learning_dl = DataLoader(learning_ds, batch_size=batch_size, shuffle=True)
+    validation_dl = DataLoader(validation_ds, batch_size=batch_size, shuffle=True)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    transformer_model = iTransformer.InertialTransformer(d_model=d_model, nhead=2, num_encoder_layers=6, num_decoder_layers=6, dim_feedforward=d_model*4, dropout=0.1, activation="relu",
+                                                         mean_src=learning_ds.mean_src, std_src=learning_ds.std_src, mean_tgt=learning_ds.mean_tgt, std_tgt=learning_ds.std_tgt).to(device)
+
+    '''
+    for sample in learning_dl:
+        sample_raw = sample['encoder_input']
+        sample_standardized = transformer_model.standardize(sample['encoder_input'], torch.from_numpy(np.array([10, 10, 10, 10, 10, 10, 10, 10], dtype=np.float32)), torch.from_numpy(np.array([2, 2, 2, 2, 2, 2, 2, 2], dtype=np.float32)))
+    '''
+
+    optimizer = torch.optim.Adam(transformer_model.parameters(), lr=learning_rate, betas=(0.9, 0.98), eps=10e-9)
+    loss_fn = nn.MSELoss()
+
+    for epoch in range(epochs):
+        for batch_num, sample in enumerate(learning_dl):
+            #Moving batch of label to GPU
+            label = sample['label'].to(device)
+
+            #Apply positional encoding and moving the results to GPU
+            encoder_in = (sample['encoder_input'] + sample['pos_encoding']).to(device)
+            decoder_in = (sample['decoder_input'] + sample['pos_encoding']).to(device)
+
+            # Compute prediction and loss
+            pred = transformer_model(encoder_in, decoder_in, seq_length, seq_length)
+            loss = loss_fn(pred, label)
+
+            # Backpropagation
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            if batch_num % 5 == 0:
+                print(f'Loss: {loss}')
