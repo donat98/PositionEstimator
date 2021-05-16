@@ -96,8 +96,8 @@ if __name__ == '__main__':
     d_model = 8
     seq_length = 5
     time_scale = (10**(-5))
-    learning_ds = iDataset.InertialDataset('converted_saves-continous1/converted_save_continous1-1.csv', d_model=d_model, seq_length=seq_length, split=False, dtype=torch.float32, time_scale=time_scale)
-    validation_ds = iDataset.InertialDataset('converted_saves-continous1/converted_save_continous1-2.csv', d_model=d_model, seq_length=seq_length, split=False, dtype=torch.float32, time_scale=time_scale)
+    learning_ds = iDataset.InertialDataset('converted_saves-continous1/converted_save_continous1-4.csv', d_model=d_model, seq_length=seq_length, split=False, dtype=torch.float32, time_scale=time_scale)
+    validation_ds = iDataset.InertialDataset('converted_saves-continous1/converted_save_continous1-8.csv', d_model=d_model, seq_length=seq_length, split=False, dtype=torch.float32, time_scale=time_scale)
 
     '''
     for sample in learning_ds:
@@ -114,7 +114,7 @@ if __name__ == '__main__':
     print(f"{generate_square_subsequent_mask(10).shape}")
     '''
 
-    '''
+
     #Positional encoding example heat map
     pos_encoding = learning_ds[0]['pos_encoding'].numpy()
     plt.pcolormesh(pos_encoding, cmap='hot')
@@ -125,10 +125,10 @@ if __name__ == '__main__':
     plt.title("PE matrix heat map")
     plt.colorbar()
     plt.show()
-    '''
+
     batch_size = 10
     learning_rate = 10**(-3)
-    epochs = 50
+    epochs = 50 #50
 
     learning_dl = DataLoader(learning_ds, batch_size=batch_size, shuffle=True)
     validation_dl = DataLoader(validation_ds, batch_size=batch_size, shuffle=True)
@@ -147,7 +147,17 @@ if __name__ == '__main__':
     optimizer = torch.optim.Adam(transformer_model.parameters(), lr=learning_rate, betas=(0.9, 0.98), eps=10e-9)
     loss_fn = nn.MSELoss()
 
+    #Lists for result plotting
+    batch_num_train = []
+    batch_num_valid = []
+    training_loss_hist = []
+    valid_loss_hist = []
+    est_valid_loss_hist = []
+
     for epoch in range(epochs):
+        #Number of batches in an epoch
+        size = len(validation_ds) // batch_size + 1
+
         for batch_num, sample in enumerate(learning_dl):
             #Moving batch of label to GPU
             label = sample['label'].to(device)
@@ -158,12 +168,58 @@ if __name__ == '__main__':
 
             # Compute prediction and loss
             pred = transformer_model(encoder_in, decoder_in, seq_length, seq_length)
-            loss = loss_fn(pred, label)
+            training_loss = loss_fn(pred, label)
 
             # Backpropagation
             optimizer.zero_grad()
-            loss.backward()
+            training_loss.backward()
             optimizer.step()
 
-            if batch_num % 5 == 0:
-                print(f'Loss: {loss}')
+            # Save result for plot
+            batch_num_train.append(epoch*size + batch_num)
+            training_loss_hist.append(training_loss.item())
+
+            #Indexing starts from 0 and every 5th training loss is printed
+            if batch_num % 5 == 4:
+                print(f'Loss: {training_loss}')
+
+        #Variables for validation on an epoch
+        validation_loss = 0
+        est_validation_loss = 0
+
+        with torch.no_grad():
+            for sample in validation_dl:
+                # Moving batch of label to GPU
+                label = sample['label'].to(device)
+
+                # Apply positional encoding and moving the results to GPU
+                encoder_in = (sample['encoder_input'] + sample['pos_encoding']).to(device)
+                decoder_in = (sample['decoder_input'] + sample['pos_encoding']).to(device)
+
+                # Compute prediction and loss
+                pred = transformer_model(encoder_in, decoder_in, seq_length, seq_length)
+                validation_loss += loss_fn(pred, label)
+                est_validation_loss += loss_fn(pred[:, -1, :], label[:, -1, :])
+
+        # Average validation loss calculation for epoch
+        validation_loss /= size
+        est_validation_loss /= size
+
+        # Save results for plot
+        batch_num_valid.append((epoch + 1)*size)
+        valid_loss_hist.append(validation_loss.item())
+        est_valid_loss_hist.append(est_validation_loss.item())
+
+        print(f"Avg validation loss: {validation_loss}")
+        print(f"Avg validation loss for estimated position: {est_validation_loss}")
+
+    plt.plot(batch_num_train, training_loss_hist)
+    plt.plot(batch_num_valid, valid_loss_hist)
+    plt.plot(batch_num_valid, est_valid_loss_hist)
+    plt.xlabel('Batch number')
+    plt.xlim((0, batch_num_train[-1]))
+    plt.ylim((0, training_loss_hist[0]))
+    plt.ylabel('Loss')
+    plt.title("Training results")
+    plt.legend(["Training loss", "Validation loss", "Validation loss for estimation"])
+    plt.show()
